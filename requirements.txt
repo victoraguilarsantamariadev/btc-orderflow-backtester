@@ -1,0 +1,24 @@
+# Core data handling
+pandas>=2.0
+numpy>=1.24
+pyarrow>=14.0
+
+# HTTP requests
+requests>=2.31
+
+# Configuration
+pyyaml>=6.0
+
+# Visualization
+matplotlib>=3.8
+plotly>=5.18
+
+# Jupyter
+jupyter>=1.0
+notebook>=7.0
+
+# Scheduling (for collector)
+schedule>=1.2
+
+# Testing
+pytest>=7.4

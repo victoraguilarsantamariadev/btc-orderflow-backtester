@@ -1,0 +1,21 @@
+firms:
+  standard_10pct:
+    profit_target: 0.08
+    max_drawdown: 0.10
+    max_daily_loss: 0.05
+    challenge_days: 30
+    min_trading_days: 10
+
+  conservative_6pct:
+    profit_target: 0.08
+    max_drawdown: 0.06
+    max_daily_loss: 0.04
+    challenge_days: 30
+    min_trading_days: 10
+
+  aggressive_10pct:
+    profit_target: 0.10
+    max_drawdown: 0.10
+    max_daily_loss: 0.05
+    challenge_days: 45
+    min_trading_days: 15

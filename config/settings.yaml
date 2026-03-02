@@ -1,0 +1,78 @@
+symbol: "BTCUSDT"
+timeframe: "5m"
+
+data:
+  start_date: "2025-09-01"
+  end_date: "2026-02-27"
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  collector_interval_sec: 300
+
+features:
+  atr_period: 20
+  bollinger_period: 20
+  bollinger_std: 2.0
+  funding_zscore_lookback: 168       # 7 days of 8h snapshots
+  funding_extreme_threshold: 2.0
+  oi_drop_threshold_pct: -1.5
+  oi_divergence_lookback: 12
+  cvd_divergence_lookback: 12
+  absorption_lookback: 6
+  bb_squeeze_kc_mult: 1.5
+  atr_compression_short: 5
+  atr_compression_long: 20
+  ls_ratio_zscore_lookback: 168
+  taker_ratio_zscore_lookback: 168
+
+signals:
+  weights:
+    liquidation_sweep: 2
+    absorption: 2
+    funding_extreme: 1
+    oi_divergence: 2
+    vol_compression: 1
+    iv_vs_rv: 1
+    ls_ratio_extreme: 1
+    taker_ratio_extreme: 1
+
+confluence:
+  min_score: 3
+  enhanced_threshold: 5
+
+risk:
+  per_trade: 0.005              # 0.5%
+  enhanced_multiplier: 1.5
+  max_drawdown: 0.10            # 10%
+
+entry_exit:
+  sl_atr_mult: 1.5
+  tp1_rr: 1.5
+  tp2_rr: 3.0
+  tp1_close_pct: 0.5
+  time_stop: 30                 # bars (= 2.5 hours at 5min)
+  confirm_window: 3             # bars to wait for confirmation
+  trail_atr: 1.0
+
+limits:
+  max_daily_trades: 3
+  max_consecutive_losses: 2
+
+backtest:
+  initial_equity: 100000
+  commission_pct: 0.0004        # 0.04% taker fee
+  slippage_pct: 0.0001          # 0.01% slippage
+
+walk_forward:
+  train_months: 2
+  test_months: 1
+  oos_months: 1
+
+monte_carlo:
+  n_simulations: 10000
+  dd_levels: [0.06, 0.10]
+
+prop_firm:
+  profit_target_pct: 0.08       # 8%
+  max_drawdown_pct: 0.10        # 10%
+  max_daily_loss_pct: 0.05      # 5%
+  challenge_days: 30
