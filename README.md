@@ -1,113 +1,112 @@
 # BTC Orderflow Backtester
 
-Motor de backtest para **BTCUSDT perpetuo en velas de 5 minutos**, basado en flujo de órdenes
-(delta, CVD, absorción) y posicionamiento (open interest, funding, ratios long/short). Combina
-seis señales en un sistema de **confluencia ponderada** y evalúa si la estrategia superaría
-el challenge de una **prop firm** (objetivo de beneficio, drawdown máximo y pérdida diaria).
+Backtesting engine for the **BTCUSDT perpetual on 5-minute bars**, built on order flow (delta,
+CVD, absorption) and positioning (open interest, funding, long/short ratios). Six signals are
+combined into a **weighted confluence** system, and the strategy is evaluated against the rules
+of a **prop firm challenge** (profit target, maximum drawdown and daily loss limit).
 
-El foco está en la ingeniería del backtest: datos multi-exchange alineados, cero lookahead
-verificado automáticamente, validación walk-forward y Monte Carlo.
+The focus is on backtest engineering: aligned multi-exchange data, automatically verified
+zero look-ahead, walk-forward validation and Monte Carlo.
 
-> Proyecto personal de investigación. Nada de esto es consejo de inversión.
+> Personal research project. Nothing here is investment advice.
 
-## Arquitectura
+## Architecture
 
 ```
-config/            settings.yaml (parámetros) · prop_firm_rules.yaml (reglas de 3 perfiles de prop firm)
-scripts/           descarga histórica · ejecución del backtest · diagnóstico de señales y de violaciones
+config/            settings.yaml (parameters) · prop_firm_rules.yaml (rules for 3 prop firm profiles)
+scripts/           historical download · backtest runner · signal and violation diagnostics
 src/
-  data/            clientes de Binance, Bybit y Coinalyze · limpieza y alineación · almacenamiento Parquet
-  features/        OHLCV · volatilidad · orderflow · open interest · funding · sentimiento · sesiones
-  signals/         interfaz BaseSignal · 6 señales · motor de confluencia
-  execution/       entrada y salida · tamaño de posición · límites diarios
-  backtest/        motor · cartera · métricas · walk-forward · Monte Carlo · detector de lookahead
+  data/            Binance, Bybit and Coinalyze clients · cleaning and alignment · Parquet storage
+  features/        OHLCV · volatility · order flow · open interest · funding · sentiment · sessions
+  signals/         BaseSignal interface · 6 signals · confluence engine
+  execution/       entry and exit · position sizing · daily limits
+  backtest/        engine · portfolio · metrics · walk-forward · Monte Carlo · look-ahead checker
 ```
 
-Cada capa depende solo de la anterior: datos → features → señales → ejecución → backtest.
-Todos los parámetros salen de YAML, sin valores fijos en el código.
+Each layer depends only on the one before it: data → features → signals → execution → backtest.
+All parameters come from YAML, with no hard-coded values.
 
-## Datos
+## Data
 
-- **Binance Futures:** velas OHLCV, funding, volumen taker buy/sell y **aggTrades** (cada
-  operación ejecutada) descargados de `data.binance.vision`, agregados a delta por vela de 5 min.
-- **Bybit V5:** open interest y ratio long/short en 5 min. Bybit conserva el histórico desde el
-  lanzamiento del par, mientras que Binance solo guarda 30 días.
-- **Coinalyze:** open interest agregado de todos los exchanges, como contexto.
+- **Binance Futures:** OHLCV bars, funding, taker buy/sell volume and **aggTrades** (every
+  executed trade) downloaded from `data.binance.vision` and aggregated into 5-minute delta bars.
+- **Bybit V5:** open interest and long/short ratio at 5-minute resolution. Bybit keeps history
+  since the symbol's launch, while Binance only keeps 30 days.
+- **Coinalyze:** open interest aggregated across exchanges, used as context.
 
-Un pipeline de limpieza valida huecos, rellena los pequeños con un límite de velas, alinea todas
-las fuentes a una rejilla exacta de 5 min y las une en un único DataFrame.
+A cleaning pipeline validates gaps, forward-fills small ones up to a bar limit, aligns every
+source to an exact 5-minute grid and merges them into a single DataFrame.
 
-## Señales
+## Signals
 
-| Señal | Lógica |
+| Signal | Logic |
 |---|---|
-| **Liquidation sweep** | El precio barre una zona con mucho open interest, el OI cae de golpe (liquidaciones) y el delta muestra absorción: entrada en contra del barrido. |
-| **Absorción** | Delta fuerte en una dirección sin que el precio se mueva: alguien absorbe el flujo agresivo. Se confirma con divergencia de CVD. |
-| **Funding reversion** | Funding extremo (z-score) indica mercado apalancado hacia un lado: entrada contraria. |
-| **OI divergence** | El OI sube mientras el precio cae: cortos abiertos como cobertura mientras se vende spot. |
-| **OI drop** | Caída brusca de OI con movimiento fuerte: la cascada de liquidaciones ya ha pasado y el precio tiende a revertir. |
-| **Vol compression** | Bollinger dentro de Keltner y ATR comprimido con OI acumulándose: entrada en la ruptura con confirmación de delta. |
+| **Liquidation sweep** | Price sweeps a zone with heavy open interest, OI drops sharply (liquidations) and delta shows absorption: enter against the sweep. |
+| **Absorption** | Strong delta in one direction while price does not move: someone is absorbing the aggressive flow. Confirmed with CVD divergence. |
+| **Funding reversion** | Extreme funding (z-score) means a market leveraged to one side: contrarian entry. |
+| **OI divergence** | OI rises while price falls: shorts opened as a hedge while spot is being sold. |
+| **OI drop** | Sharp OI drop with a strong move: the liquidation cascade is over and price tends to revert. |
+| **Vol compression** | Bollinger Bands inside Keltner Channels and compressed ATR while OI builds up: enter on the breakout with delta confirmation. |
 
-El **motor de confluencia** suma las señales con sus pesos y solo opera si la puntuación supera
-un mínimo. Por encima de un segundo umbral, la operación se considera reforzada y puede llevar
-más tamaño.
+The **confluence engine** adds up the signals with their weights and only trades when the score
+exceeds a minimum. Above a second threshold the trade is flagged as enhanced and can be sized up.
 
-## Motor de backtest
+## Backtest engine
 
-**Híbrido vectorizado + vela a vela.** Features y señales se calculan vectorizadas con
-pandas/NumPy sobre toda la serie. La gestión de posiciones va vela a vela porque necesita estado:
-salidas parciales, trailing stop y stop por tiempo.
+**Hybrid vectorized + bar-by-bar.** Features and signals are computed vectorized with
+pandas/NumPy over the whole series. Position management runs bar by bar because it needs state:
+partial exits, trailing stops and time stops.
 
-**Reglas anti-lookahead**, aplicadas en el código y comprobadas después:
-1. Todas las features derivadas se desplazan una vela (`shift(1)`) en `builder.py`: la feature en T solo usa datos hasta T−1.
-2. Señal en la vela T → la confirmación se busca desde T+1.
-3. Entrada al **open** de la vela de entrada.
-4. Stop y TP se comprueban contra el máximo y mínimo de la vela, y **el stop antes que el TP**: si los dos caben en la misma vela, se asume el peor caso.
+**Look-ahead rules**, enforced in code and checked afterwards:
+1. Every derived feature is shifted by one bar (`shift(1)`) in `builder.py`: the feature at T only uses data up to T−1.
+2. Signal on bar T → confirmation is checked from T+1.
+3. Entry at the **open** of the entry bar.
+4. Stop and take-profit are checked against the bar's high and low, **stop before take-profit**: if both fit in the same bar, the worst case is assumed.
 
-`LookAheadBiasChecker` revisa cada operación al terminar (momento de entrada, precio de entrada
-dentro del rango de la vela, precio de salida coherente) y lista las violaciones.
+`LookAheadBiasChecker` reviews every trade after the run (entry timing, entry price within the
+bar's range, consistent exit price) and lists any violations.
 
-**Cuatro versiones de gestión** sobre las mismas señales: V1 cierra todo en TP1; V2 cierra parcial
-en TP1 y deja correr el resto; V3 añade trailing stop por ATR; V4 añade tamaño reforzado por
-confluencia.
+**Four management versions** over the same signals: V1 closes everything at TP1; V2 closes part
+at TP1 and lets the rest run; V3 adds an ATR trailing stop; V4 adds larger size for enhanced
+confluence trades.
 
-**Riesgo y ejecución:** riesgo fijo por operación (0,5 % del equity), stop a 1,5 × ATR, TP1 a
-1,5 R y TP2 a 3 R, comisión taker del 0,04 % y slippage del 0,01 %, máximo de 3 operaciones
-diarias y parada tras 2 pérdidas seguidas.
+**Risk and execution:** fixed risk per trade (0.5% of equity), stop at 1.5 × ATR, TP1 at 1.5 R
+and TP2 at 3 R, 0.04% taker fee and 0.01% slippage, at most 3 trades per day and a halt after
+2 consecutive losses.
 
-## Validación
+## Validation
 
-- **Walk-forward:** entrena en un bloque de 2 meses, valida en el mes siguiente y avanza. Todas las métricas que cuentan salen de periodos que el sistema no ha visto al ajustarse.
-- **Monte Carlo:** 10.000 remuestreos con reemplazo de los resultados de las operaciones (semilla fija, reproducible) para estimar la **probabilidad de pasar el challenge** con un 6 % y un 10 % de drawdown máximo.
-- **Métricas:** Sharpe, Sortino, Calmar, drawdown máximo y su duración, win rate, profit factor, expectativa y R medio por operación, motivos de salida y si se habría pasado el challenge.
+- **Walk-forward:** train on a 2-month block, test on the following month and roll forward. Every metric that counts comes from periods the system did not see while being tuned.
+- **Monte Carlo:** 10,000 resamples with replacement of trade outcomes (fixed seed, reproducible) to estimate the **probability of passing the challenge** at 6% and 10% maximum drawdown.
+- **Metrics:** Sharpe, Sortino, Calmar, maximum drawdown and its duration, win rate, profit factor, expectancy and average R per trade, exit reasons, and whether the challenge would have been passed.
 
-## Ingeniería
+## Engineering
 
-- **Descarga concurrente:** los aggTrades se descargan y agregan día a día con un `ThreadPoolExecutor` (4 hilos por defecto). Es trabajo limitado por E/S de red, así que los hilos funcionan bien en Python pese al GIL.
-- **Procesado por lotes:** se trabaja en lotes de 20 días y cada lote se agrega a 5 min antes de juntarse, de modo que nunca hay en memoria más de 20 días de ticks en bruto.
-- **Parquet con pyarrow** como formato de almacenamiento, con filtrado por fechas al cargar.
-- **Interfaz común** (`BaseSignal`) para todas las señales: añadir una señal es una clase nueva y un peso en el YAML.
+- **Concurrent download:** aggTrades are downloaded and aggregated day by day with a `ThreadPoolExecutor` (4 threads by default). The work is network-I/O bound, so threads pay off in Python despite the GIL.
+- **Batch processing:** work is done in 20-day batches and each day is aggregated to 5-minute bars as soon as it is downloaded, so raw ticks for at most one batch are ever held in memory.
+- **Parquet with pyarrow** as the storage format, with date filtering on load.
+- **Common interface** (`BaseSignal`) for every signal: adding one is a new class plus a weight in the YAML.
 
-## Limitaciones y siguientes pasos
+## Limitations and next steps
 
-- **Escritura incremental de Parquet.** `append_parquet` relee y reescribe el fichero entero en cada lote, así que el coste crece con cada día descargado. Además, los lotes se siguen acumulando en memoria para devolverlos al final. Lo correcto es escribir cada lote como un fichero aparte de un dataset Parquet particionado por fecha y no retener los lotes.
-- **Monte Carlo en bucle de Python.** Las 10.000 simulaciones recorren las operaciones una a una. Vectorizándolo con NumPy (matriz de simulaciones × operaciones con `cumsum` y máscaras de drawdown) o paralelizando con `multiprocessing` bajaría el tiempo en órdenes de magnitud.
-- **Sin tests unitarios.** `pytest` está en las dependencias pero no hay tests. El simulador de salidas (stop y TP en la misma vela, trailing, parciales) y el detector de lookahead son los primeros candidatos.
-- **Un solo activo.** El motor está pensado para un símbolo. La extensión natural es un universo de perpetuos con una cartera compartida.
+- **Incremental Parquet writes.** `append_parquet` reads and rewrites the whole file on every batch, so each batch costs more than the last. Batches are also kept in memory to be returned at the end. The fix is to write each batch as its own file in a date-partitioned Parquet dataset and stop retaining batches.
+- **Monte Carlo in a Python loop.** The 10,000 simulations walk through the trades one by one. Vectorizing with NumPy (a simulations × trades matrix with `cumsum` and drawdown masks) or parallelizing with `multiprocessing` would cut the runtime by orders of magnitude.
+- **No unit tests.** `pytest` is in the requirements but there are no tests yet. The exit simulator (stop and take-profit in the same bar, trailing, partials) and the look-ahead checker are the first candidates.
+- **Single asset.** The engine is built for one symbol. The natural extension is a universe of perpetuals with a shared portfolio.
 
-## Uso
+## Usage
 
 ```bash
 pip install -r requirements.txt
 
-python -m scripts.download_historical                   # descarga todo a data/raw/
-python -m scripts.download_historical --skip-aggtrades  # sin los ticks (mucho más rápido)
+python -m scripts.download_historical                   # download everything to data/raw/
+python -m scripts.download_historical --skip-aggtrades  # without ticks (much faster)
 
 python -m scripts.run_backtest                  # V1
-python -m scripts.run_backtest --version v3     # V3 con trailing
-python -m scripts.run_backtest --walk-forward   # validación walk-forward
-python -m scripts.run_backtest --monte-carlo    # probabilidad de pasar el challenge
-python -m scripts.run_backtest --all            # todo
+python -m scripts.run_backtest --version v3     # V3 with trailing stop
+python -m scripts.run_backtest --walk-forward   # walk-forward validation
+python -m scripts.run_backtest --monte-carlo    # probability of passing the challenge
+python -m scripts.run_backtest --all            # everything
 ```
 
 ## Stack
